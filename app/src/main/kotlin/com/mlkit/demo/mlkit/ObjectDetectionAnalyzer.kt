@@ -16,6 +16,7 @@ data class ObjectDetectionResult(
     val label: String,
     val confidence: Float,
     val boundingBox: Rect,
+    val trackingId: Int? = null
 )
 
 internal class ObjectDetectionAnalyzer(
@@ -23,170 +24,75 @@ internal class ObjectDetectionAnalyzer(
     private val imageLabelingAnalyzer: ImageLabelingAnalyzer,
 ) {
 
-    private var lastTrackedId: Int? = null
-    private var framesSinceSelection = 0
-
-    suspend fun analyze(imageProxy: ImageProxy): ObjectDetectionResult? {
+    // الآن نتتبع 5 كائنات
+    suspend fun analyze(imageProxy: ImageProxy): List<ObjectDetectionResult> {
         var bitmap: Bitmap? = null
-        var croppedBitmap: Bitmap? = null
         try {
             val rotationDegrees = imageProxy.imageInfo.rotationDegrees
-            bitmap = imageProxy.toCustomBitmap() ?: return null
+            bitmap = imageProxy.toCustomBitmap() ?: return emptyList()
 
-            val detectedObjects = detector.detectObjects(bitmap, rotationDegrees) ?: return null
+            val detectedObjects = detector.detectObjects(bitmap, rotationDegrees) ?: return emptyList()
+            if (detectedObjects.isEmpty()) return emptyList()
 
-            val selectedObject = selectBestObject(
+            // اختر أفضل 5 كائنات حسب القرب من المركز والحجم
+            val topObjects = selectTopNObjects(
                 detectedObjects = detectedObjects,
                 imageWidth = imageProxy.width,
                 imageHeight = imageProxy.height,
-            ) ?: return null
-
-            // Crop bitmap to only include the detected object's bounding box
-            val boundingBox = selectedObject.boundingBox
-            croppedBitmap = Bitmap.createBitmap(
-                bitmap,
-                boundingBox.left.coerceAtLeast(0),
-                boundingBox.top.coerceAtLeast(0),
-                boundingBox.width().coerceAtMost(bitmap.width - boundingBox.left),
-                boundingBox.height().coerceAtMost(bitmap.height - boundingBox.top),
+                n = 5
             )
 
-            val labelResult = imageLabelingAnalyzer.analyzeImage(
-                croppedBitmap = croppedBitmap,
-                rotationDegrees = rotationDegrees,
-            ) ?: return null
+            val results = mutableListOf<ObjectDetectionResult>()
 
-            return ObjectDetectionResult(
-                label = labelResult.label,
-                confidence = labelResult.confidence,
-                boundingBox = selectedObject.boundingBox,
-            )
+            for (obj in topObjects) {
+                var croppedBitmap: Bitmap? = null
+                try {
+                    val boundingBox = obj.boundingBox
+                    // تأكد أن القص داخل حدود الصورة
+                    val left = boundingBox.left.coerceAtLeast(0)
+                    val top = boundingBox.top.coerceAtLeast(0)
+                    val width = boundingBox.width().coerceAtMost(bitmap.width - left).coerceAtLeast(1)
+                    val height = boundingBox.height().coerceAtMost(bitmap.height - top).coerceAtLeast(1)
+
+                    croppedBitmap = Bitmap.createBitmap(bitmap, left, top, width, height)
+
+                    val labelResult = imageLabelingAnalyzer.analyzeImage(
+                        croppedBitmap = croppedBitmap,
+                        rotationDegrees = rotationDegrees,
+                    ) ?: continue
+
+                    results.add(
+                        ObjectDetectionResult(
+                            label = labelResult.label,
+                            confidence = labelResult.confidence,
+                            boundingBox = obj.boundingBox,
+                            trackingId = obj.trackingId
+                        )
+                    )
+                } catch (e: Exception) {
+                    Log.e("MLKitDemo", "Labeling failed for one object", e)
+                } finally {
+                    croppedBitmap?.recycle()
+                }
+            }
+            return results
+
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
             Log.e("MLKitDemo", "ML Kit analysis failed", e)
-            return null
+            return emptyList()
         } finally {
             bitmap?.recycle()
-            croppedBitmap?.recycle()
         }
     }
 
-    private fun selectBestObject(
+    private fun selectTopNObjects(
         detectedObjects: List<DetectedObject>,
         imageWidth: Int,
         imageHeight: Int,
-    ): DetectedObject? {
-        if (detectedObjects.isEmpty()) {
-            lastTrackedId = null
-            return null
-        }
-
-        framesSinceSelection++
-
-        // Find currently tracked object
-        val trackedObject = lastTrackedId?.let { id ->
-            detectedObjects.find { it.trackingId == id }
-        }
-
-        // Determine if we should reconsider selection
-        val shouldReconsiderSelection = trackedObject == null || framesSinceSelection >= SELECTION_COOLDOWN_FRAMES
-
-        val selectedObject = when {
-            !shouldReconsiderSelection -> trackedObject
-            trackedObject == null -> selectInitialObject(
-                detectedObjects = detectedObjects,
-                imageWidth = imageWidth,
-                imageHeight = imageHeight,
-            )
-            else -> considerSwitchingToNewObject(
-                trackedObject = trackedObject,
-                detectedObjects = detectedObjects,
-                imageWidth = imageWidth,
-                imageHeight = imageHeight,
-            )
-        }
-
-        lastTrackedId = selectedObject.trackingId
-        return selectedObject
-    }
-
-    private fun selectInitialObject(
-        detectedObjects: List<DetectedObject>,
-        imageWidth: Int,
-        imageHeight: Int,
-    ): DetectedObject {
-        framesSinceSelection = 0
-        return selectBestByScore(detectedObjects, imageWidth, imageHeight).obj
-    }
-
-    private fun considerSwitchingToNewObject(
-        trackedObject: DetectedObject,
-        detectedObjects: List<DetectedObject>,
-        imageWidth: Int,
-        imageHeight: Int,
-    ): DetectedObject {
-        val bestScored = selectBestByScore(detectedObjects, imageWidth, imageHeight)
-        val currentScore = calculateScore(trackedObject, imageWidth, imageHeight)
-        val shouldSwitch = bestScored.score > currentScore * SELECTION_HYSTERESIS_MULTIPLIER
-
-        return if (shouldSwitch) {
-            framesSinceSelection = 0
-            bestScored.obj
-        } else {
-            trackedObject
-        }
-    }
-
-    private fun selectBestByScore(
-        detectedObjects: List<DetectedObject>,
-        imageWidth: Int,
-        imageHeight: Int,
-    ): ScoredObject {
+        n: Int
+    ): List<DetectedObject> {
         return detectedObjects
-            .asSequence()
             .map { ScoredObject(it, calculateScore(it, imageWidth, imageHeight)) }
-            .maxBy { it.score }
-    }
-
-    private fun calculateScore(
-        obj: DetectedObject,
-        imageWidth: Int,
-        imageHeight: Int,
-    ): Float {
-        val rect = obj.boundingBox
-        val centerX = rect.exactCenterX()
-        val centerY = rect.exactCenterY()
-
-        val imageCenterX = imageWidth / 2f
-        val imageCenterY = imageHeight / 2f
-
-        // Normalized distance to center [0, ~0.707]
-        val distanceToCenter = sqrt(
-            ((centerX - imageCenterX) / imageWidth).pow(2) +
-                ((centerY - imageCenterY) / imageHeight).pow(2),
-        )
-
-        // Normalized area [0, 1]
-        val area = rect.width() * rect.height()
-        val normalizedArea = area / (imageWidth * imageHeight).toFloat()
-
-        // Combined score: 70% center proximity, 30% size
-        // Clamped to [0, 1] for robustness
-        val centerScore = (1f - distanceToCenter).coerceIn(0f, 1f)
-
-        return (centerScore * CENTER_WEIGHT) + (normalizedArea * AREA_WEIGHT)
-    }
-
-    private data class ScoredObject(
-        val obj: DetectedObject,
-        val score: Float,
-    )
-
-    companion object {
-        private const val SELECTION_COOLDOWN_FRAMES = 15
-        private const val SELECTION_HYSTERESIS_MULTIPLIER = 1.3f
-        private const val CENTER_WEIGHT = 0.7f
-        private const val AREA_WEIGHT = 0.3f
-    }
-}
+           
