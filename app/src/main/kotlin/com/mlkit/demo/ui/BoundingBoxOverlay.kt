@@ -21,6 +21,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.mlkit.demo.model.BoundingBox
 
+// هذا يرسم مربع واحد - يتحرك ويتغير حجمه تلقائياً مع الكائن
 @Composable
 fun BoundingBoxOverlay(
     label: String,
@@ -34,17 +35,18 @@ fun BoundingBoxOverlay(
 
     Box(modifier = modifier.fillMaxSize()) {
         Canvas(modifier = Modifier.fillMaxSize()) {
-            // مربع أخضر سميك مع ظل بسيط للتتبع
+            // ظل متوهج خلف المربع
             drawRoundRect(
-                color = green.copy(alpha = 0.3f),
-                topLeft = Offset(boundingBox.left-4, boundingBox.top-4),
+                color = green.copy(alpha = 0.25f),
+                topLeft = Offset(boundingBox.left - 6, boundingBox.top - 6),
                 size = Size(
-                    boundingBox.right - boundingBox.left + 8,
-                    boundingBox.bottom - boundingBox.top + 8
+                    boundingBox.right - boundingBox.left + 12,
+                    boundingBox.bottom - boundingBox.top + 12
                 ),
                 cornerRadius = CornerRadius(20f, 20f),
-                style = Stroke(width = 12f)
+                style = Stroke(width = 14f)
             )
+            // المربع الأخضر الأساسي - حجمه = حجم الكائن بالضبط
             drawRoundRect(
                 color = green,
                 topLeft = Offset(boundingBox.left, boundingBox.top),
@@ -53,12 +55,12 @@ fun BoundingBoxOverlay(
                     boundingBox.bottom - boundingBox.top
                 ),
                 cornerRadius = CornerRadius(16f, 16f),
-                style = Stroke(width = 6f)
+                style = Stroke(width = 5f)
             )
         }
 
         val labelOffsetX = boundingBox.left
-        val labelOffsetY = (boundingBox.top - 48).coerceAtLeast(8f)
+        val labelOffsetY = (boundingBox.top - 46).coerceAtLeast(6f)
 
         Box(
             modifier = Modifier
@@ -67,13 +69,30 @@ fun BoundingBoxOverlay(
                     y = with(density) { labelOffsetY.toDp() }
                 )
                 .background(green, RoundedCornerShape(8.dp))
-                .padding(horizontal = 12.dp, vertical = 6.dp)
+                .padding(horizontal = 10.dp, vertical = 4.dp)
         ) {
             Text(
                 text = "$label $confidencePercent%",
                 color = Color.Black,
-                fontSize = 16.sp,
+                fontSize = 14.sp,
                 fontWeight = FontWeight.Bold
+            )
+        }
+    }
+}
+
+// **** هذا الجديد: يرسم مربعات لكل الكائنات في الصورة ****
+@Composable
+fun MultiBoundingBoxOverlay(
+    detections: List<Triple<String, Float, BoundingBox>>,
+    modifier: Modifier = Modifier
+) {
+    Box(modifier = modifier.fillMaxSize()) {
+        detections.forEach { (label, conf, box) ->
+            BoundingBoxOverlay(
+                label = label,
+                confidence = conf,
+                boundingBox = box
             )
         }
     }
