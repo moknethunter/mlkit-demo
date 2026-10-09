@@ -1,6 +1,7 @@
 package com.mlkit.demo.camera
 
 import android.content.Context
+import android.util.Log
 import android.util.Size
 import androidx.camera.core.CameraSelector
 import androidx.camera.core.ImageAnalysis
@@ -15,7 +16,13 @@ import kotlin.coroutines.suspendCoroutine
 
 class CameraManager(private val context: Context) {
 
+    companion object {
+        private const val TAG = "CameraManager"
+    }
+
     private var cameraProvider: ProcessCameraProvider? = null
+
+    // خيط واحد لتحليل الإطارات — يبقى حيًا لأن الكنترولر Koin Singleton
     private val cameraExecutor = Executors.newSingleThreadExecutor()
 
     suspend fun startCamera(
@@ -25,60 +32,61 @@ class CameraManager(private val context: Context) {
     ) {
         val provider = getCameraProvider()
 
-        // Unbind all use cases before rebinding
+        // فك أي ربط سابق
         provider.unbindAll()
 
-        // Build preview use case
+        // 1) Preview
         val preview = Preview.Builder()
             .build()
-            .also {
-                it.surfaceProvider = previewView.surfaceProvider
-            }
+            .also { it.surfaceProvider = previewView.surfaceProvider }
 
-        // Build image analysis use case (optional)
+        // 2) ImageAnalysis (اختياري)
         val imageAnalysis = analyzer?.let {
             ImageAnalysis.Builder()
                 .setTargetResolution(Size(1280, 720))
                 .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
+                .setOutputImageFormat(ImageAnalysis.OUTPUT_IMAGE_FORMAT_YUV_420_888)
                 .build()
                 .also { analysis ->
                     analysis.setAnalyzer(cameraExecutor, it)
                 }
         }
 
-        // Select back camera
         val cameraSelector = CameraSelector.DEFAULT_BACK_CAMERA
 
         try {
-            // Bind use cases to camera
             if (imageAnalysis != null) {
                 provider.bindToLifecycle(
-                    lifecycleOwner,
-                    cameraSelector,
-                    preview,
-                    imageAnalysis
+                    lifecycleOwner, cameraSelector, preview, imageAnalysis
                 )
             } else {
                 provider.bindToLifecycle(
-                    lifecycleOwner,
-                    cameraSelector,
-                    preview
+                    lifecycleOwner, cameraSelector, preview
                 )
             }
         } catch (e: Exception) {
-            android.util.Log.e("CameraManager", "Camera binding failed", e)
+            Log.e(TAG, "Camera binding failed", e)
         }
     }
 
+    /**
+     * يفصل الكاميرا فقط.
+     * لا نُغلق الـ executor لأن الكنترولر Singleton وقد يُعاد استخدامه
+     * عند العودة إلى الشاشة.
+     */
     fun shutdown() {
-        cameraExecutor.shutdown()
+        try {
+            cameraProvider?.unbindAll()
+        } catch (e: Exception) {
+            Log.e(TAG, "Unbind failed", e)
+        }
     }
 
     private suspend fun getCameraProvider(): ProcessCameraProvider {
         return cameraProvider ?: suspendCoroutine { continuation ->
-            val cameraProviderFuture = ProcessCameraProvider.getInstance(context)
-            cameraProviderFuture.addListener({
-                val provider = cameraProviderFuture.get()
+            val future = ProcessCameraProvider.getInstance(context)
+            future.addListener({
+                val provider = future.get()
                 cameraProvider = provider
                 continuation.resume(provider)
             }, ContextCompat.getMainExecutor(context))
