@@ -20,6 +20,14 @@ jobs:
 
       - name: Setup Android SDK
         uses: android-actions/setup-android@v3
+        with:
+          api-level: 33
+          build-tools: '33.0.2'
+          components: |
+            platform-tools
+            build-tools;33.0.2
+            platforms;android-33
+            cmdline-tools;latest
 
       - name: Grant execute permission
         run: chmod +x gradlew
